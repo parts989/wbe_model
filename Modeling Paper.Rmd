@@ -1,0 +1,1301 @@
+---
+title: "Modeling Paper"
+author: "Peter Arts"
+date: "11/28/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include = FALSE, echo = FALSE)
+library(tidyverse)
+library(RColorBrewer)
+library(zoo)
+library(patchwork)
+library(lubridate)
+library(scales)
+library(deSolve)
+library(fitdistrplus)
+```
+
+```{r}
+cohort1 <- read.table('Data/092722_allvirusdata_PSO.csv', header = T, sep = ',')
+IDs <- sort(unique(cohort1$ID))
+hue <- brewer.pal(9,'Set1')
+
+```
+
+Gamma Sims
+```{r include=FALSE}
+gamma_func=function(par,times){
+  abs(par[3]) * dgamma(times, shape=abs(par[1]), scale = abs(par[2]), log = FALSE)
+}
+
+gamma_cost_func = function(par,data){
+  
+  k =abs(par[1])#shape
+  theta= abs(par[2]) #scale
+  mag = abs(par[3])
+  t0= par[4] #offset
+  
+  times=data[,1]+t0
+  conc=log10(data[,2])
+  
+  sim = gamma_func(c(k,theta,mag),times)
+  
+  cost = sum(abs(sim-conc)^2)+abs(t0)
+  
+}
+
+gamma_sims <- list()
+
+for (id in IDs){
+  data <- subset(cohort1, cohort1[,1] == id & is.na(cohort1[,6]) == F)[,c(2,6,7)]
+  out = optim(c(5, 2, 7, 0),
+              gamma_cost_func,
+              data=data,
+              control=list(maxit=1E4))
+  sim= cbind(-5:50 -out$par[4],
+             gamma_func(out$par[1:3],-5:50))
+  LOD = 50 #define limit of detection
+  
+  shedding_index = which(sim[,2]<8 & sim[,1] >= 0 & sim[,1] <= 30)
+  shedding_range = range(sim[shedding_index,1])
+
+gamma_sims[[as.character(id)]] <- data.frame('day_PSO'=sim[shedding_index,1], 'N_conc.' = sim[shedding_index,2])
+}
+
+gamma_df <- data.frame()
+for (ID in names(gamma_sims)){
+  gamma_df <- rbind(gamma_df,data.frame(ID,gamma_sims[[ID]]))
+}
+
+
+
+```
+
+Weibull Sims
+```{r include=FALSE}
+fit_func=function(par,times){
+  # abs(par[3]) * dgamma(times, shape=abs(par[1]), scale = abs(par[2]), log = FALSE)
+  # abs(par[3]) * dlnorm(times, meanlog = abs(par[1]), sdlog = abs(par[2]), log = FALSE)
+  abs(par[3]) * dweibull(times, shape=abs(par[1]), scale = abs(par[2]), log = FALSE)
+}
+
+weibull_cost_func = function(par,data){
+  
+  k =abs(par[1])#shape
+  theta= abs(par[2]) #scale
+  mag = abs(par[3])
+  t0= par[4] #offset
+  
+  times=data[,1]+t0
+  conc=log10(data[,2])
+  
+  sim = fit_func(c(k,theta,mag),times)
+  
+  cost = sum(abs(sim-conc)^1.5)+0.5*abs(t0)^2 + abs(theta)^0.5 #10*log(abs(theta)) # + abs(theta)  + abs(k)
+}
+
+
+weibull_sims <- list()
+
+for (id in IDs){
+  data <- subset(cohort1, cohort1[,1] == id & is.na(cohort1[,6]) == F)[,c(2,6,7)]
+  out = optim(c(1, 1, 1E2, 0),weibull_cost_func,data=data,control=list(maxit=1E4))
+  sim= cbind(-5:50-out$par[4], fit_func(out$par[1:3],-5:50))
+  LOD = 50 #define limit of detection
+  
+  shedding_index = which(sim[,2]<8 & sim[,1] >= 0 & sim[,1] <= 30)
+  shedding_range = range(sim[shedding_index,1])
+  
+  weibull_sims[[as.character(id)]] <- data.frame('day_PSO'=sim[shedding_index,1], 'N_conc.' =sim[shedding_index,2])
+}
+
+
+weibull_df <- data.frame()
+for (ID in names(weibull_sims)){
+  weibull_df <- rbind(weibull_df,data.frame(ID,weibull_sims[[ID]]))
+}
+
+
+weibullIDs <- c('4520','4525','4526','4532','4544','4547','4558','4561','4577','4579','4586','4591','4593','4597','4598','4600','4602')
+gammaIDs <- c('4533','4534','4538','4540','4541','4545','4546','4549','4576','4585','4587','4596')
+
+ggplot()+
+  geom_rect(data = data.frame('ID' =weibullIDs),#subset(cohort1, cohort1$ID %in% weibullIDs), 
+                          fill = 'red', alpha = 0.4, xmin = -Inf, xmax = Inf,
+            ymin = -Inf,ymax = Inf) +
+  geom_rect(data = data.frame('ID' =gammaIDs),#subset(cohort1, cohort1$ID %in% weibullIDs), 
+                          fill = 'blue', alpha = 0.4, xmin = -Inf, xmax = Inf,
+            ymin = -Inf,ymax = Inf) +
+  geom_point(data = subset(cohort1,cohort1$N_det == T), aes(x = Day, y = log10(N_conc)), shape = 19) +
+  geom_point(data = subset(cohort1,cohort1$N_det == F), aes(x = Day, y = log10(N_conc)), shape = 1) +
+  geom_line(data = gamma_df,aes(x = day_PSO, y = `N_conc.`, color = 'Gamma'))+
+  geom_line(data = weibull_df,aes(x = day_PSO, y = `N_conc.`, color = 'Weibull'))+
+  scale_color_manual(values = c('Gamma' = 'blue', 'Weibull' = 'red'))+
+  facet_wrap(vars(ID))+
+  theme_bw()
+
+ggsave('fits.png', units = 'in', width = 12, height = 10)
+
+##Root mean squared error = standard deviation of residuals
+
+gamma_df$day_PSO <- round(gamma_df$day_PSO)
+weibull_df$day_PSO <- round(weibull_df$day_PSO)
+
+shedrmse <- data.frame()
+for (id in IDs){
+  idsub <- cohort1[cohort1$ID == id,]
+  
+  if (nrow(idsub) >= 3 & max(idsub$Day)-min(idsub$Day) >= 10 & sum(idsub$N_det, na.rm =T) > 0) {
+  gsub <- subset(gamma_df, gamma_df$ID == id)
+  wsub <- subset(weibull_df, weibull_df$ID == id)
+  csub <- subset(cohort1, cohort1$ID == id)
+  
+ grmse <- sqrt(mean(log10(csub$N_conc) - gsub$`N_conc.`[gsub$day_PSO %in% csub$Day], na.rm = T)^2)
+ wrmse <- sqrt(mean(log10(csub$N_conc) - wsub$`N_conc.`[wsub$day_PSO %in% csub$Day], na.rm = T)^2)  
+  
+ shedrmse <- rbind(shedrmse,data.frame('ID' = id,'Weibull' = wrmse, 'Gamma' = grmse))
+}
+}
+
+shedrmse$gammabetter  <- (shedrmse$Weibull - shedrmse$Gamma > 0)
+
+```
+
+
+```{r include = FALSE}
+weibullIDs <- shedrmse$ID[shedrmse$gammabetter == F]
+gammaIDs <- shedrmse$ID[shedrmse$gammabetter == T]
+
+
+bestfit_sims <- data.frame()
+for (id in as.character(weibullIDs)){
+  bestfit_sims <- rbind(bestfit_sims,data.frame(id,weibull_sims[[id]]))
+}
+for (id in as.character(gammaIDs)){
+ bestfit_sims <- rbind(bestfit_sims,data.frame(id,gamma_sims[[id]]))
+}
+
+##round day
+
+bestfit_sims$day_PSO <- round(bestfit_sims$day_PSO,digits = 0)
+colnames(bestfit_sims) <- c('ID', 'Day', 'N_conc')
+
+ggplot()+
+  geom_point(data = subset(cohort1,cohort1$N_det == T & cohort1$ID %in% bestfit_sims$ID), aes(x = Day, y = log10(N_conc)), shape = 19) +
+  geom_point(data = subset(cohort1,cohort1$N_det == F & cohort1$ID %in% bestfit_sims$ID), aes(x = Day, y = log10(N_conc)), shape = 1) +
+  geom_line(data = bestfit_sims,aes(x = Day, y = N_conc))+
+  facet_wrap(vars(ID))+
+  theme_bw()
+
+
+## 4526, 4546
+
+ggsave('newfits.png', units = 'in', width = 12, height = 10)
+```
+
+Figure 1
+```{r Figure 1, include = FALSE}
+modeled_traj <- ggplot() + 
+  geom_point(data = subset(cohort1, cohort1$ID %in% names(bestfit_sims) & cohort1$N_det == T), aes(x = Day, y = N_conc), shape = 19) +
+  geom_point(data = subset(cohort1, cohort1$ID %in% names(bestfit_sims)& cohort1$N_det == F), aes(x = Day, y = N_conc), shape = 1) +
+  geom_line(data = bestfitdf, aes(x = day_PSO, y = 10^N_conc.), color = UMcolors1[1])+
+  facet_wrap(vars(ID))+
+  scale_y_log10(labels = trans_format('log10',math_format(10^.x))) +
+  labs(title = 'a',x = 'Day ASO', y = 'Fecal Concentration (gc/mg-dw)')+
+  UMthemebw+
+  theme(strip.background = element_rect( fill = 'white'))
+
+
+traj_box <- ggplot() +
+  geom_boxplot(data = bestfitdf,aes(x = floor(day_PSO), y = 10^N_conc., group = floor(day_PSO)), fill =  "steelblue")+
+  scale_y_log10(labels = trans_format('log10',math_format(10^.x)))+
+  labs(title = 'b',x = 'Day ASO', y = 'Fecal Concentration (gc/mg-dw)')+
+  UMthemebw
+
+traj_frac <- ggplot() +
+  geom_bar(position = 'fill', stat = 'count',data = bestfitdf,aes(x = floor(day_PSO),fill = N_conc. > 1.7))+
+  scale_fill_manual(labels = c('Negative','Positive'),values = c( "#E7B800","steelblue"))+
+   labs(title = 'c',y = 'Proportion',fill = '', x = 'Day ASO')+
+  UMthemebw
+
+(modeled_traj+(traj_box/traj_frac)) + plot_layout(widths = c(1,1.25))
+
+ggsave('Figure1.png', units = 'in', width = 12, height = 6)
+
+```
+
+PMMoV Shedding Model
+```{r include = FALSE}
+pmmov <- cohort1$PMMoV_conc[is.na(cohort1$PMMoV_conc) == F]
+pmean <- mean(log10(pmmov))
+psd <- sd(log10(pmmov))
+
+mean_pmmov_shed <- data.frame()
+for (id in IDs){
+  IDsub <- subset(cohort1, cohort1[,1] == id & is.na(cohort1$PMMoV_conc) == F)
+  indmean <- mean(log10(IDsub$PMMoV_conc))
+  indsd <- sd(log10(IDsub$PMMoV_conc))
+  mean_pmmov_shed <- bind_rows(mean_pmmov_shed, data.frame(id,indmean, indsd))
+}
+
+clean_mean_pmmov_shed <- mean_pmmov_shed[is.na(mean_pmmov_shed$indsd) == F,]
+
+pmmov_shedding <- function(logmean_pmmov, N, D){
+  pmmov_counter <- data.frame('Individual' = 1:N, 'pmmovID' = 1:N)
+  
+  pmmov_counter$pmmovID <- sample(1:nrow(logmean_pmmov), nrow(pmmov_counter), replace = T)
+  
+  shed_vect <- c()
+  for (day in 1:D){
+    
+    shed_vect <- rnorm(logmean_pmmov[pmmov_counter$pmmovID,2],
+          mean = logmean_pmmov[pmmov_counter$pmmovID,2], 
+          sd = logmean_pmmov[pmmov_counter$pmmovID,3])
+    
+    shed_vect[shed_vect > log10(max(cohort1$PMMoV_conc, na.rm = T))] <- log10(max(cohort1$PMMoV_conc, na.rm = T))
+    
+    pmmov_counter <- cbind(pmmov_counter,data.frame(shed_vect))
+  }
+  pmmov_counter
+}
+
+```
+
+CrAss Shedding Model
+```{r include = FALSE}
+mean_crass_shed <- data.frame()
+for (id in IDs){
+  IDsub <- subset(cohort1, cohort1[,1] == id & is.na(cohort1$crAss_conc) == F)
+  indmean <- mean(IDsub$crAss_conc)
+  indsd <- sd(IDsub$crAss_conc)
+  mean_crass_shed <- bind_rows(mean_crass_shed, data.frame(id,indmean, indsd))
+}
+
+clean_mean_crass_shed <- mean_crass_shed[is.na(mean_crass_shed$indsd) == F,]
+
+crass_shedding <- function(mean_crass, N, D){
+  
+  crass_counter <- data.frame('Individual' = 1:N, 'crAssID' = 1:N)
+  
+  crass_counter$crAssID <- sample(1:nrow(mean_crass), nrow(crass_counter), replace = T)
+  
+  
+  crass_counter
+  shed_vect <- c()
+  for (day in 1:D){
+    shed_vect <- c()
+    
+    shed_vect <- rnorm(mean_crass[crass_counter$crAssID,2],
+                       mean = mean_crass[crass_counter$crAssID,2], 
+                       sd = mean_crass[crass_counter$crAssID,3])
+    
+    shed_vect[shed_vect > max(cohort1$crAss_conc, na.rm = T)] <- max(cohort1$crAss_conc, na.rm = T)
+    shed_vect[shed_vect < 0] <- 0
+    
+    
+    crass_counter <- cbind(crass_counter,data.frame(shed_vect))
+    
+  }
+  crass_counter
+}
+
+clean_mean_crass_shed <- mean_crass_shed[is.na(mean_crass_shed$indsd) == F,]
+```
+
+Dilution Functions
+```{r include = FALSE}
+normalized_dilute <- function(Cfecal,Cpmmov,Cpmmov_fecal,TSS,Kd,Kdp,Psewershed) {
+  
+  ((Cfecal*Kd*Cpmmov*(1+Kdp*TSS))/((Cpmmov_fecal)*Kdp*(1+Kd*TSS)*Psewershed))
+  
+}
+ww_dilute <- function(K,TSS,Pshedders, Ptotal,ffecal,Cfeces){
+  
+  (K*(TSS*ffecal*(Pshedders/Ptotal)*Cfeces))/(1+K*TSS)
+}
+
+Kd = 1 #mL/mg 
+Kdp = .100 #mL/mg
+#TSS <- 28000*N #from rose et al mg_dw/cap/day high income
+
+```
+
+SEIR Model
+```{r, include=FALSE}
+dS <- function(B, S, I){
+  -B*S*I
+}
+
+dE <- function(B, S, I, a){
+  -B*S*I - a*E
+}
+
+dI <- function(a, E, y, I){
+  a*E - y*I
+}
+
+dR <- function(y, I){
+  y*I
+}
+
+seirModel <- function (time, state, parms) {
+  S <- state[1]
+  E <- state[2]
+  I <- state[3]
+  R <- state[4]
+  
+  B <- parms["beta"]
+  y <- parms["gamma"]
+  a <- parms["alpha"]
+  N <- S+I+R+E
+  
+  dSdt <- -B*S*I
+  dEdt <- B*S*I - a*E
+  dIdt <- a*E - y*I
+  dRdt <- y*I
+  
+  dxdt <- c(dSdt,dEdt,dIdt,dRdt)
+  
+  list(dxdt)
+}
+
+SEIR.model<-function (init, beta.s, gamma.e, gamma.i, times) {
+  library(deSolve)
+  seir <- function(time, state, parameters) {
+    with(as.list(c(state, parameters)), {
+      dS <- -beta.s * S * I
+      dE <- beta.s * S * I - gamma.e * E
+      dI <- gamma.e * E - gamma.i * I
+      dR <- gamma.i * I
+      return(list(c(dS, dE, dI, dR)))
+    })
+  }
+  parameters <- c(beta.s = beta.s, gamma.e = gamma.e, gamma.i = gamma.i)
+  out <- ode(y = init, times = times, func = seir, parms = parameters)
+  out <- as.data.frame(out)
+  out$time <- NULL
+  return(out)
+}
+```
+
+Model Parameters
+```{r, include=FALSE}
+N <-  1000
+parms <- c(beta=0.2,gamma=0.1,alpha=0.2)
+times <- seq(from=0,to=100, by=1)
+xstart <- c(S=N-1, E=1, I=0, R=0)
+
+#TSS <- 28000*N # this is mg-dw/day
+
+TSS <- .280 #a value characteristic of observations from Marlene's paper mg/mL
+```
+
+Run the Model
+```{r, include=FALSE}
+
+ode(
+  func=seirModel,
+  y=xstart,
+  times=times,
+  parms=parms,
+  method=c("ode45")
+) %>% 
+  as.data.frame() -> SEIR_out
+
+SEIR_out <- round(SEIR_out, digits = 0)
+
+ggplot(SEIR_out)+
+  geom_path(aes(x = time, y = S/N), color = 'purple')+
+  geom_path(aes(x = time, y = E/N), color = 'green')+
+  geom_path(aes(x = time, y = I/N), color = 'red')+
+  geom_path(aes(x = time, y = R/N), color = 'blue')+
+  labs(y = 'Proportion', x = 'Time (days)')+
+  theme_classic()
+
+
+p = 1/N
+init <- c(S = 1-p, E = 0, I = p, R = 0)
+mod <- SEIR.model(init = init, beta.s = parms[1], gamma.e = parms[3], gamma.i = parms[2], times = 1:250)
+
+ggplot(mod)+
+  #geom_path(aes(x = 1:nrow(mod), y = S), color = 'purple')+
+  #geom_path(aes(x = 1:nrow(mod), y = E), color = 'green')+
+  geom_path(aes(x = 1:nrow(mod), y = I), color = 'red')+
+  #geom_path(aes(x = 1:nrow(mod), y = R), color = 'blue')+
+  labs(y = 'Proportion', x = 'Time (days)')+
+  theme_classic()
+
+SEIR_out <- round(mod*N, digits = 0)
+
+ggplot(SEIR_out)+
+ # geom_path(aes(x = 1:nrow(mod), y = S), color = 'purple')+
+  #geom_path(aes(x = 1:nrow(mod), y = E), color = 'chartreuse4')+
+  geom_path(aes(x = 1:nrow(mod), y = I), color = UMcolors[3])+
+  #geom_path(aes(x = 1:nrow(mod), y = R), color = 'cyan3')+
+  labs(y = 'Individuals with \nActive Infection', x = 'Day of Outbreak')+
+  theme_classic()
+```
+
+SARS Counter
+```{r, include=FALSE}
+create_infectioncounter <- function(n){
+  infectioncounter <- data.frame(1:n, vector(mode = 'numeric', length = n),vector(mode = 'numeric', length = n),vector(mode = 'numeric', length = n))
+  colnames(infectioncounter) <- c('ID', 'Day_of_infection', 'Trajectory', 'traj_counter')
+  infectioncounter
+}
+
+
+day_infection_counts <- function(I, R, shed_fits, n, d, infectioncounter, posprob){
+  
+  oldinfects <- nrow(subset(infectioncounter, infectioncounter[,2] != 0))
+  totalinfects <- I+R
+  
+  #if(max(oldinfects +1) <= n){
+  #newinfects <- seq(min(oldinfects+1,n),totalinfects)
+  #} else {newinfects <- c()}
+  if(oldinfects < totalinfects){
+    newinfects <- totalinfects - oldinfects
+    for (i in (oldinfects+1):(oldinfects+newinfects)){
+      infectioncounter[i,3] <- rbinom(1,1,posprob)
+      if (infectioncounter[i,3] == 1){
+        infectioncounter[i,3] <- sample(1:length(names(bestfit_sims)), 1)
+      }
+      infectioncounter[i,2] <- d
+    }
+  }
+  
+  dayshed <- c()
+  
+  for (j in 1:totalinfects){
+    infectioncounter[j,4] <- infectioncounter[j,4] + 1
+    
+    if (infectioncounter[j,3] > 0){
+      shed <- shed_fits[[infectioncounter[j,3]]][infectioncounter[j,4],2] #indexing the shedding value for each day
+    } else if (infectioncounter[j,3] == 0) {
+      shed <- 0
+    }
+    
+    dayshed <- append(dayshed, shed)
+  }
+  zeros <- seq(0,0,length.out = n-length(dayshed))
+  dayshed <- append(dayshed,zeros)
+  
+  
+  dayshed[which(is.na(dayshed) == T)] <- 0
+  infectioncounter <- bind_cols(infectioncounter,dayshed)
+  
+  names(infectioncounter)[names(infectioncounter) == 'dayshed'] <- d
+  
+  infectioncounter
+}
+```
+
+
+```{r include=FALSE}
+for (pop in N){
+  SARS_count <- create_infectioncounter(n = N)
+
+for (day in 1:250){
+  
+  SARS_count <- day_infection_counts(I = SEIR_out[day,3],
+                                     R = SEIR_out[day,4],
+                                     shed_fits =  bestfit_sims, 
+                                     n = N, 
+                                     d = day, 
+                                     infectioncounter = SARS_count,
+                                     posprob = 1- (length(threshold_neg_ids)/length(threshold_ids)))
+  
+}
+
+sums <- c()
+for (col in 5:ncol(SARS_count)){
+  add <- sum(10^SARS_count[,col])
+  sums <- append(sums, add)
+  
+}
+
+incidence <- c()
+medianage <- c()
+medianshed <- c() 
+    for (day in 1:nrow(SEIR_out)){
+      dayincidence <- sum(SARS_count$Day_of_infection == day)
+      incidence <- append(incidence, dayincidence)
+      agevect <- day - subset(SARS_count$Day_of_infection, SARS_count$Day_of_infection <= day)
+      agevect <- subset(agevect, agevect <= 30)
+      shedsubvect <- subset(SARS_count[[day+4]], SARS_count$Day_of_infection <= day)
+      
+      medianage <- append(medianage, median(agevect))
+      medianshed <- append(medianshed, 10^median(shedsubvect))
+    }
+
+SEIR_out$incidence <- incidence
+SEIR_out$median_infection_age <- medianage
+SEIR_out$median_shed_magnitude <- medianshed
+SEIR_out$incidence[1] <- 0
+
+ggplot()+
+  geom_point(aes(x = 1:length(sums),y = sums))
+}
+```
+
+
+SARS Dilution in WW
+```{r}
+SARS_ww <- c()
+for (jour in 5:ncol(SARS_count)){
+  
+  SARS_day_ww <- 0
+  
+  for (ind in 1:N){
+    dil <- ww_dilute(K = Kd,TSS = TSS,Pshedders = 1, Ptotal = N, ffecal = 1, Cfeces = 10^SARS_count[ind,jour])/Kd
+    SARS_day_ww <- SARS_day_ww + dil
+  }
+  
+  SARS_ww <- append(SARS_ww, SARS_day_ww)
+}
+
+
+SARS_rollmean <- rollmean(SARS_ww,7)
+
+
+f <- max(SEIR_out$I)/max(SARS_ww)
+```
+
+PMMoV Dilution in WW
+```{r include=FALSE}
+
+pmmov_counter <- pmmov_shedding(clean_mean_pmmov_shed, 1000, D = 100) #D = days
+
+PMMoV_ww <- c()
+for (jour in 3:102){
+  PMMoV_day_ww <- 0
+  
+   PMMoV_day_ww <- ww_dilute(Kdp,TSS,Pshedders = 1, Ptotal = 1, ffecal = 1, Cfeces = mean(10^pmmov_counter[,jour]))
+    
+  
+  PMMoV_ww <- append(PMMoV_ww, PMMoV_day_ww/Kdp)
+}
+
+PMMoV_rollmean <- rollmean(PMMoV_ww,7)
+
+ggplot() +
+  geom_point(aes(x = 1:length(PMMoV_ww), y = PMMoV_ww), alpha = 0.5)+
+  geom_line(aes(x = 1:length(PMMoV_rollmean), y = PMMoV_rollmean), size = 1)+
+  scale_y_continuous(name = 'PMMoV (cp/mL)')+
+  theme_classic()+
+  expand_limits(y = c(1,10000000))
+```
+
+
+CrAss Dilution in WW 
+```{r eval=FALSE, include=FALSE}
+crAss_ww <- c()
+
+crAss_counter <- crass_shedding(clean_mean_crass_shed, N, 100)
+for (jour in 3:102){
+
+  
+    crAss_day_ww <- ww_dilute(Kdp,TSS,Pshedders = 1, Ptotal = 1, ffecal = 1, Cfeces = mean(crAss_counter[,jour]))
+
+  crAss_ww <- append(crAss_ww, crAss_day_ww/Kdp)
+}
+
+crAss_rollmean <- rollmean(crAss_ww,7)
+ggplot() +
+  geom_point(aes(x = length(crAss_ww), y = crAss_ww), alpha = 0.5)+
+  geom_line(aes(x = length(crAss_rollmean), y = crAss_rollmean), size = 1)+
+  scale_y_continuous(name = 'crAss (cp/mL)')+
+  theme_classic()+
+  expand_limits(y = c(1,10000000))
+
+colors <- c('CrAss' = 'blue', 'PMMoV' = 'black')
+ggplot() +
+  geom_point(aes(x = 1:length(PMMoV_ww), y = PMMoV_ww, color = 'PMMoV'), alpha = 0.5)+
+  geom_line(aes(x = 1:length(PMMoV_rollmean), y = PMMoV_rollmean, color = 'PMMoV'), size = 1)+
+  geom_point(aes(x = 1:length(crAss_ww), y = crAss_ww, color = 'CrAss'), alpha = 0.5)+
+  geom_line(aes(x = 1:length(crAss_rollmean), y = crAss_rollmean, color = 'CrAss'), size = 1)+ 
+  labs(title = 'N = 1000', x = '', y = 'Copies/mL', color = '')+
+  scale_color_manual(values = colors)+
+  theme_classic()+
+  expand_limits(y = c(1,10000000))
+```
+
+
+Compare outbreak curve of mechanistic model with nonmechanistic
+```{r}
+#Mechanistic Shedding
+f1 <- (max(SEIR_out$I))/max(SARS_ww)
+```
+
+```{r}
+#mean shedding
+simple_SARS <- c()
+for (inf in SEIR_out$I){
+  simple_SARS_dil <- ww_dilute(1,TSS,Pshedders = inf, Ptotal = N, ffecal = 1, Cfeces = mean(cohort1$N_conc[cohort1$N_det == T], na.rm = T))/Kd #why did I divide by 0.2 - dry weight?
+  simple_SARS <- append(simple_SARS,simple_SARS_dil)
+}
+rollmean_simple_SARS <- rollmean(simple_SARS, 7)
+
+f2 <- (max(SEIR_out$I)+20)/max(simple_SARS)
+```
+
+
+```{r}
+#Random Shedding
+rand_SARS <- c()
+mod_Sars <- data.frame()
+for (ind in names(bestfit_sims)){
+  colnames(bestfit_sims[[ind]]) <- c('day','logsars')
+  mod_Sars<- rbind(mod_Sars,bestfit_sims[[ind]])
+}
+
+rand_SARS<- c()
+for (day in 1:nrow(SEIR_out)){
+  dayshed <- c()
+  for (inf in 1:SEIR_out$I[day]){
+    (rand <- sample(mod_Sars[,2],1))
+    dayshed <- append(dayshed,rand)
+  }
+  randmean <- mean(10^dayshed)
+  rand_SARS_dil <- ww_dilute(1,TSS,Pshedders = inf, Ptotal = N, ffecal = 1, Cfeces = randmean)/Kd
+  rand_SARS <- append(rand_SARS,rand_SARS_dil)
+}
+rollmean_rand_SARS <- rollmean(rand_SARS, 7)
+
+f3 <- (max(SEIR_out$I))/max(rand_SARS)
+
+compare1e3 <- bind_rows(data.frame('name' = 'Uniform', 'Day' = 1:250, 'conc' = simple_SARS[1:250]),
+      data.frame('name' ='Random', 'Day' = 1:250, 'conc' =rand_SARS[1:250]),
+      data.frame('name' ='Mechanistic', 'Day' = 1:250, 'conc' =SARS_ww[1:250]))
+ 
+ggplot(compare1e3)+
+  geom_point(aes(x = Day, y = conc))+
+  facet_grid(rows = vars(name), scales = 'free_y')+
+  labs(y = 'Wastewater Concentration (gc/mL)', x = 'Day')+
+  scale_y_continuous(labels = comma, breaks = seq(0,5000, by = 500))+
+  theme_bw()+
+  theme(strip.background = element_rect(fill = 'white'))
+
+
+colnames(SARS_count)[5:254] <- 1:250
+SARS_count_long <- pivot_longer(SARS_count,cols = 5:254, names_to = 'shed', values_to = 'day')
+
+ggplot(SARS_count, aes(x = 1:250, y = ))
+
+ggsave('Figure2.png', units = 'in', width = 6, height = 5)
+```
+
+
+```{r include = FALSE}
+#Run SARS Model 10 times for multiple scales
+N <-  c(10,50,100,500,1000,5000,10000,50000,1e+05)
+
+spaghettiAll <- list()
+SEIR_results <- list()
+SARS_count_results <- list()
+
+for (popu in N) {
+  
+  SARS_ww_app <- data.frame()
+  reps <- 1:10
+  for ( j in reps){
+    
+    p = 1/popu
+    init <- c(S = 1-p, E = 0, I = p, R = 0)
+    mod <- SEIR.model(init = init, beta.s = parms[1], gamma.e = parms[3], gamma.i = parms[2], times = 1:350)
+    
+    SEIR_out <- round(mod*popu, digits = 0)
+    
+    
+    
+    create_infectioncounter <- function(n){
+      infectioncounter <- data.frame(1:n, vector(mode = 'numeric', length = n),vector(mode = 'numeric', length = n),vector(mode = 'numeric', length = n))
+      colnames(infectioncounter) <- c('ID', 'Day_of_infection', 'Trajectory', 'traj_counter')
+      infectioncounter
+    }
+    
+    
+    day_infection_counts <- function(I, R, shed_fits, n, d, infectioncounter, posprob){
+      
+      oldinfects <- nrow(subset(infectioncounter, infectioncounter[,2] != 0))
+      totalinfects <- I+R
+      
+      #if(max(oldinfects +1) <= n){
+      #newinfects <- seq(min(oldinfects+1,n),totalinfects)
+      #} else {newinfects <- c()}
+      if(oldinfects < totalinfects){
+        newinfects <- totalinfects - oldinfects
+        for (i in (oldinfects+1):(oldinfects+newinfects)){
+          infectioncounter[i,3] <- rbinom(1,1,posprob)
+          if (infectioncounter[i,3] == 1){
+            infectioncounter[i,3] <- sample(1:length(names(bestfit_sims)), 1)
+          }
+          infectioncounter[i,2] <- d
+        }
+      }
+      
+      
+      
+      dayshed <- c()
+      
+      for (j in 1:totalinfects){
+        infectioncounter[j,4] <- infectioncounter[j,4] + 1
+        
+        if (infectioncounter[j,3] > 0){
+          shed <- shed_fits[[infectioncounter[j,3]]][infectioncounter[j,4],2] #indexing the shedding value for each day
+        } else if (infectioncounter[j,3] == 0) {
+          shed <- 0
+        }
+        
+        dayshed <- append(dayshed, shed)
+      }
+      zeros <- seq(0,0,length.out = n-length(dayshed))
+      dayshed <- append(dayshed,zeros)
+      
+      
+      dayshed[which(is.na(dayshed) == T)] <- 0
+      infectioncounter <- bind_cols(infectioncounter,dayshed)
+      
+      names(infectioncounter)[names(infectioncounter) == 'dayshed'] <- d
+      
+      infectioncounter
+    }
+    
+    for (pop in popu){
+      SARS_count <- create_infectioncounter(n = popu)
+      
+      for (day in 1:nrow(SEIR_out)){
+        
+        SARS_count <- day_infection_counts(I = SEIR_out[day,3],
+                                           R = SEIR_out[day,4],
+                                           shed_fits =  bestfit_sims, 
+                                           n = popu, 
+                                           d = day, 
+                                           infectioncounter = SARS_count,
+                                           posprob = 1- (length(threshold_neg_ids)/length(threshold_ids)))
+        
+      }
+      
+      means <- c()
+      for (col in 5:75){
+        avs <- sum(10^SARS_count[,col])
+        means <- append(means, avs)
+      }
+      
+      incidence <- c()
+      for (day in 1:nrow(SEIR_out)){
+        dayincidence <- sum(SARS_count$Day_of_infection == day)
+        incidence <- append(incidence, dayincidence)
+      }
+      
+      SEIR_out$incidence <- incidence
+      
+      SEIR_results[[as.character(popu)]] <- SEIR_out
+      SARS_count_results[[as.character(popu)]] <- SARS_count
+      
+      TSS <- 0.280
+      
+      SARS_ww <- c()
+      for (jour in 5:355){
+        
+        SARS_day_ww <- 0
+        
+        for (ind in 1:popu){
+          dil <- ww_dilute(Kd,TSS,Pshedders = 1, Ptotal = popu, ffecal = 1, Cfeces = 10^SARS_count[ind,jour])/Kd
+          SARS_day_ww <- SARS_day_ww + dil
+        }
+        
+        SARS_ww <- append(SARS_ww, SARS_day_ww)
+      }
+      
+      SARS_ww <- data.frame('Day' =  1:350,'SARS_ww' = SARS_ww)
+      
+      SARS_ww <- data.frame('Iter' = rep(j, nrow(SARS_ww)), SARS_ww)
+      
+      
+    }
+    SARS_ww_app <- rbind(SARS_ww_app, SARS_ww)
+    
+  }
+  
+  spaghettiAll[[as.character(popu)]] <- SARS_ww_app
+}
+```
+
+```{r include = FALSE}
+regs <- list()
+#linear regression for each run, prevalence vs. daily concentration
+for (popu in N){
+  regs[[as.character(popu)]] <- data.frame()
+  print(popu)
+  
+  SEIR_results[[as.character(popu)]]$normI <- SEIR_results[[as.character(popu)]]$I/popu
+  
+  for (m in unique(spaghettiAll[[as.character(popu)]]$Iter)){
+    ind_reg <- lm(subset(spaghettiAll[[as.character(popu)]], 
+                         spaghettiAll[[as.character(popu)]]$Iter == m)$SARS_ww ~ (SEIR_results[[as.character(popu)]]$I))
+    
+    SARS_lin_pred <- predict(ind_reg)
+    
+    r_squared <- summary(ind_reg)$adj.r.squared
+    slope <- ind_reg$coefficients[2]
+    regs[[as.character(popu)]] <- rbind(regs[[as.character(popu)]],data.frame(r_squared, slope))
+    
+  }
+}
+
+##calculate average and sd of R^2 for each scale
+
+stats <- data.frame()
+for (popu in N){
+  r_squared <- mean(regs[[as.character(popu)]]$r_squared)
+  slope <- mean(regs[[as.character(popu)]]$slope)
+  r_squaredsd <- sd(regs[[as.character(popu)]]$r_squared)
+  slopesd <- sd(regs[[as.character(popu)]]$slope)
+  r_squared_med <- median(regs[[as.character(popu)]]$r_squared)
+  slope_med <-  median(regs[[as.character(popu)]]$slope)
+  
+  
+  stats <- rbind(stats, data.frame(popu, r_squared,r_squaredsd, slope,slopesd, r_squared_med, slope_med))
+}
+
+
+regdf <- data.frame()
+for (item in names(regs)){
+  itdf <- regs[[item]]
+  itdf$pop <- as.integer(item)
+  regdf <- rbind(regdf,itdf)
+}
+
+
+
+ggplot(regdf)+
+  geom_point(aes(x = pop, y = r_squared))+
+  geom_point(data = stats,aes(x = popu, y = r_squared_med), shape = '-', size = 10)+
+  scale_x_log10()
+
+ggplot(regdf)+
+  geom_point(aes(x = pop, y = slope*pop))+
+  geom_point(data = stats,aes(x = popu, y = slope_med*popu), shape = '-', size = 10)+
+  scale_x_log10()
+
+ggplot(stats)+
+  geom_point(aes(x = popu, y = r_squared))+
+  scale_x_log10()
+
+ggplot(stats)+
+  geom_point(aes(x = popu, y = r_squaredsd))+
+  scale_x_log10()
+
+ggplot(stats)+
+  geom_point(aes(x = popu, y = slope))+
+  scale_x_log10()+
+  scale_y_log10()
+
+ggplot(stats)+
+  geom_point(aes(x = popu, y = slopesd))+
+  scale_x_log10()+
+  scale_y_log10()
+
+##Regressions
+
+est_fit <- lm(r_squared ~ log(popu), stats) ##This regression evaluates the change in fit suitability with increasing pop
+est_var <- lm(r_squaredsd ~ log(popu), stats) ## THis regression evaluates the change in run to run variance in fit suitability with increasing pop
+
+est_corr <- lm(log(slope) ~ log(popu), stats) # This regression evaluates the change in prev-WW correlation with increasing population
+est_corrvar <- lm(log(slopesd) ~ log(popu), stats) #This regression evaluates the change in run to run variance in prev-ww correlation with increasing population
+
+reg1 <- ggplot(stats)+
+  geom_point(aes(x = popu, y = r_squared))+
+  geom_line(aes(x = popu, y = predict(est_fit)))+
+  scale_x_log10()+
+  theme_classic()+
+  labs(x = 'Population', y = bquote('Mean - Adjusted '~R^2))
+
+reg2 <- ggplot(stats)+
+  geom_point(aes(x = popu, y = r_squaredsd))+
+  geom_line(aes(x = popu, y = predict(est_var)))+
+  scale_x_log10()+
+  theme_classic()+
+  labs(x = 'Population', y = bquote('Standard Deviation - Adjusted'~R^2))
+
+reg3 <- ggplot(stats)+
+  geom_point(aes(x = popu, y = slope))+
+  geom_line(aes(x = popu, y = exp(predict(est_corr))))+
+  scale_x_log10()+
+  scale_y_log10()+
+  theme_classic()+
+  labs(x = 'Population', y = bquote('Mean - Slope'))
+
+reg4 <- ggplot(stats)+
+  geom_point(aes(x = popu, y = slopesd))+
+  geom_line(aes(x = popu, y = exp(predict(est_corrvar))))+
+  scale_x_log10()+
+  scale_y_log10()+
+  theme_classic()+
+  labs(x = 'Population', y = bquote('Standard Deviation - Slope'))
+
+(reg1 +reg2)/ (reg3 + reg4)
+
+
+maxes <- c()
+for(item in names(spaghettiAll)){
+  maxes <- append(maxes, max(spaghettiAll[[item]][,3]))
+  
+}
+f <- c()
+for (item in 1:length(N)){
+  f <- append(f, (.15*N[item])/maxes[item])
+}
+
+```
+
+```{r}
+allspag <- allspaghetti
+allspag.norm <- allspag[allspag$I >= 0.01*as.numeric(allspag$pop),]
+
+
+allspag.norm[allspag.norm$pop == '1000', 2] <- allspag.norm[allspag.norm$pop == '1000', 2] - 50
+allspag.norm[allspag.norm$pop == '10000', 2] <- allspag.norm[allspag.norm$pop == '10000', 2] - 92
+allspag.norm[allspag.norm$pop == '1e+05', 2] <- allspag.norm[allspag.norm$pop == '1e+05', 2] - 133
+
+plotlayout <- 
+'AB
+ AB
+ AB
+ CC
+ CC'
+
+
+
+ww_iter <- ggplot(allspag.norm)+
+  geom_point(aes(x = Day, y = SARS_ww, color = as.character(Iter)), alpha = 0.3)+
+  facet_grid(rows = vars(pop), scales = 'free_y')+
+  scale_y_continuous(labels = comma)+
+  scale_color_manual(values = UMcolors1)+
+  theme_bw()+
+  theme(legend.position = 'none', strip.text.y = element_blank()) +
+  labs(title = 'a',y = 'Concentrations (gc/mL)')
+
+seir_iter <- ggplot(allspag.norm)+
+  geom_line(aes(x = Day, y = I))+
+  facet_grid(rows = vars(pop), scales = 'free_y')+
+  labs(title = 'b',y = 'Infected Individuals')+
+  theme_bw()
+
+reg_rsq <- ggplot(regdf)+
+  geom_point(aes(x = pop, y = r_squared))+
+  geom_point(data = stats,aes(x = popu, y = r_squared_med), shape = '-', size = 10)+
+  scale_x_log10(labels = comma)+
+  labs(title = 'c',x = 'Sewershed Population', y = 'r^2')+
+  theme_bw()
+
+reg_slope <- ggplot(regdf)+
+  geom_point(aes(x = pop, y = slope*pop))+
+  geom_point(data = stats,aes(x = popu, y = slope_med*popu), shape = '-', size = 10)+
+  scale_x_log10(labels = comma)+
+  scale_y_continuous(labels = comma)+
+  labs(title = 'd',x = 'Sewershed Population', y = 'Normalized Slope (gc/mL)')+
+  theme_bw()
+
+(ww_iter + seir_iter)/(reg_rsq + reg_slope)
+
+ggsave('Figure 3.png', units = 'in', width = 9, height = 7)
+```
+
+
+Biomarker Population Iterations
+```{r}
+##Biomarker Population Iteration
+N <-  c(100,1000,10000,100000)
+TSS = .280
+spaghettiPMMoV <- list()
+spaghetticrAss <- list()
+PMMoV_data <- list()
+crAss_data <- list()
+reps <- 1:10
+day  <- 100
+for (popu in N) {
+  
+  PMMoV_rollmean_app <- data.frame()
+  crAss_rollmean_app <- data.frame()
+  PMMoV_app <- data.frame()
+  crAss_app <- data.frame()
+  
+  
+  for (j in reps){
+  
+  pmmov_counter <- pmmov_shedding(clean_mean_pmmov_shed, popu, day)
+  crAss_counter <- crass_shedding(clean_mean_crass_shed, popu, day)
+  
+  PMMoV_ww <- c()
+  crAss_ww <- c()
+  
+  
+  for (jour in 3:32){
+    
+    PMMoV_day_ww <- 0
+    crAss_day_ww <- 0
+    
+      
+      PMMoV_day_ww <- ww_dilute(Kdp,TSS,Pshedders = popu, Ptotal = popu, ffecal = 1, Cfeces = mean(10^pmmov_counter[,jour]))/Kdp
+      crAss_day_ww  <- ww_dilute(Kdp,TSS,Pshedders = popu, Ptotal = popu, ffecal = 1, Cfeces = mean(crAss_counter[,jour]))/Kdp
+      
+    
+    PMMoV_ww <- append(PMMoV_ww, PMMoV_day_ww)
+    crAss_ww <- append(crAss_ww, crAss_day_ww)
+    print(c("Iteration" = j,'Population' =  popu))
+  }
+  
+  PMMoV_rollmean <- rollmean(PMMoV_ww,7)
+  crAss_rollmean <- rollmean(crAss_ww,7)
+      PMMoV_rollmean <- data.frame('Day' = 4:(length(PMMoV_ww)-3),'WW_rollmean' = rollmean(PMMoV_ww,7))
+      crAss_rollmean <- data.frame('Day' = 4:(length(crAss_ww)-3), 'WW_rollmean' = rollmean(crAss_ww,7))
+      PMMoV_ww <- data.frame('Day' = 1:length(PMMoV_ww), 'WW_conc' = PMMoV_ww)
+      crAss_ww <- data.frame('Day' = 1:length(crAss_ww), 'WW_conc' = crAss_ww)
+      
+      PMMoV_rollmean <- data.frame('Iter' = rep(j, nrow(PMMoV_rollmean)), PMMoV_rollmean)
+      crAss_rollmean <- data.frame('Iter' = rep(j, nrow(crAss_rollmean)), crAss_rollmean)
+      PMMoV_ww <- data.frame('Iter' = rep(j, nrow(PMMoV_ww)), PMMoV_ww)
+      crAss_ww <- data.frame('Iter' = rep(j, nrow(crAss_ww)), crAss_ww)
+    
+    PMMoV_rollmean_app <- rbind(PMMoV_rollmean_app, PMMoV_rollmean)
+    crAss_rollmean_app <- rbind(crAss_rollmean_app, crAss_rollmean)
+    PMMoV_app <- rbind(PMMoV_app, PMMoV_ww)
+    crAss_app <- rbind(crAss_app, crAss_ww)
+  }
+  
+  PMMoV_data[[as.character(popu)]] <- PMMoV_app
+  crAss_data[[as.character(popu)]] <- crAss_app
+  
+  spaghettiPMMoV[[as.character(popu)]] <- PMMoV_rollmean_app
+  spaghetticrAss[[as.character(popu)]] <- crAss_rollmean_app
+}
+
+
+bspag <- rbind(data.frame('pop' = c('100'), PMMoV_data[['100']], 'crAss' = crAss_data[['100']]$WW_conc),
+               data.frame('pop' = c('1000'), PMMoV_data[['1000']], 'crAss' = crAss_data[['1000']]$WW_conc),
+               data.frame('pop' = c('10000'), PMMoV_data[['10000']], 'crAss' = crAss_data[['10000']]$WW_conc),
+               data.frame('pop' = c('1e+05'), PMMoV_data[['1e+05']], 'crAss' = crAss_data[['1e+05']]$WW_conc))
+
+colnames(bspag)<- c('pop','Iter','Day','PMMoV','crAss')
+
+bspag <- pivot_longer(bspag, cols = PMMoV:crAss, names_to = 'target')
+
+pop.labs <- c('100'= 100, '1,000'=1000, '10,000' = 10000,'100,000' = 1e+05)
+
+scientific <- function(x){
+    ifelse(x==0, "0", parse(text=gsub("[+]", "", gsub("e", " %*% 10^", scientific_format()(x)))))
+}
+
+bspag$pop <- factor(bspag$pop, levels = c(100,1000,10000,1e+05), labels = c('100','1,000','10,000','100,000'))
+
+
+#biomarker stats
+
+biostats <- data.frame()
+popmean <- data.frame()
+biodata <- data.frame()
+for(pop in c('100','1,000','10,000','100,000')){
+  PMMoV <- bspag$value[bspag$pop == pop & bspag$Iter == iter & bspag$target == 'PMMoV']
+  
+  crAss <- bspag$value[bspag$pop == pop & bspag$Iter == iter & bspag$target == 'crAss']
+    
+   
+  biodata <- rbind(biodata, data.frame(pop,PMMoV, crAss))
+  
+  for(iter in 1:10){
+    bpmean <- mean(bspag$value[bspag$pop == pop & bspag$Iter == iter & bspag$target == 'PMMoV'])
+    bpsd <- sd(bspag$value[bspag$pop == pop & bspag$Iter == iter& bspag$target == 'PMMoV'])
+    bcmean <- mean(bspag$value[bspag$pop == pop & bspag$Iter == iter & bspag$target == 'crAss'])
+    bcsd <- sd(bspag$value[bspag$pop == pop & bspag$Iter == iter& bspag$target == 'crAss'])
+   
+    biostats <- rbind(biostats, data.frame(pop,iter,bpmean,bpsd,bcmean,bcsd))
+  }
+  popmean <- rbind(popmean, data.frame(pop, 'pmean' = mean(biostats$bpmean[biostats$pop == pop]), 'psd' = sd(biostats$bpmean[biostats$pop == pop]),'pmsd' = mean(biostats$bpsd[biostats$pop == pop]),
+                   'cmean' = mean(biostats$bcmean[biostats$pop == pop]), 'csd' = sd(biostats$bcmean[biostats$pop == pop]), 'cmsd' = mean(biostats$bcsd[biostats$pop == pop])))
+}
+
+biocols  <- c('PMMoV' = "#E7B800","crAss" = "steelblue")
+a<- ggplot(bspag) +
+  #geom_path(aes(x = Day, y = value, color = target), alpha = 0.4)+
+  geom_point(aes(x = Day, y = value, color = target), alpha = 0.4)+
+  facet_grid(cols = vars(pop))+
+  labs(title = 'a',x = 'Day', y = 'Concentration (gc/mL)', color = '')+
+ scale_y_continuous(labels = scientific, breaks = seq(0, 8e6, by = 1e6))+
+  expand_limits(y = c(1e5,8e6))+
+  scale_color_manual(values = biocols)+
+  theme_bw()+
+  theme(legend.position = 'right',strip.background = element_rect(fill = 'white'))
+
+biodata <- pivot_longer(biodata, cols = 2:3, names_to = 'target', values_to = 'conc')
+
+biodata$pop <- factor(biodata$pop,levels = c('100','1,000','10,000', '100,000')) 
+biodata$conc <- as.numeric(biodata$conc)
+
+b<- ggplot(biodata)+
+  geom_boxplot(aes( y = conc, color = target))+
+  theme_classic()+
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+
+  facet_grid(cols = vars(pop))+
+  scale_y_continuous(labels = scientific, breaks = seq(1e6, 8e6, by = 1e6))+
+  expand_limits(y = c(0,6e6))+
+  scale_color_manual(values = biocols)+
+  labs(title = 'b',x = '', y = 'Concentration (gc/mL)', color = '')
+
+a/b 
+
+ggsave('Figure4b.png', units = 'in', width = 8, height = 6)
+```
+
+SARS Population Iteration
+```{r}
+##SARS Population Iteration
+library(gganimate)
+library(gifski)
+library(png)
+library(magick)
+
+
+N <-  c(100,1000,10000,1e+05)
+
+spaghettiAll <- list()
+SEIR_results <- list()
+SARS_count_results <- list()
+
+for (popu in N) {
+
+SARS_rollmean_app <- data.frame()
+reps <- 1:10
+for ( j in reps){
+
+  p = 1/popu
+  init <- c(S = 1-p, E = 0, I = p, R = 0)
+  mod <- SEIR.model(init = init, beta.s = parms[1], gamma.e = parms[3], gamma.i = parms[2], times = 1:250)
+
+  SEIR_out <- round(mod*popu, digits = 0)
+  
+  
+  
+  create_infectioncounter <- function(n){
+    infectioncounter <- data.frame(1:n, vector(mode = 'numeric', length = n),vector(mode = 'numeric', length = n),vector(mode = 'numeric', length = n))
+    colnames(infectioncounter) <- c('ID', 'Day_of_infection', 'Trajectory', 'traj_counter')
+    infectioncounter
+  }
+  
+  
+  day_infection_counts <- function(I, R, shed_fits, n, d, infectioncounter, posprob){
+  
+  oldinfects <- nrow(subset(infectioncounter, infectioncounter[,2] != 0))
+  totalinfects <- I+R
+  
+#if(max(oldinfects +1) <= n){
+  #newinfects <- seq(min(oldinfects+1,n),totalinfects)
+#} else {newinfects <- c()}
+  if(oldinfects < totalinfects){
+    newinfects <- totalinfects - oldinfects
+    for (i in (oldinfects+1):(oldinfects+newinfects)){
+    infectioncounter[i,3] <- rbinom(1,1,posprob)
+    if (infectioncounter[i,3] == 1){
+      infectioncounter[i,3] <- sample(1:length(names(bestfit_sims)), 1)
+    }
+    infectioncounter[i,2] <- d
+  }
+  }
+  
+  
+  
+  dayshed <- c()
+  
+  for (j in 1:totalinfects){
+    infectioncounter[j,4] <- infectioncounter[j,4] + 1
+    
+    if (infectioncounter[j,3] > 0){
+       shed <- shed_fits[[infectioncounter[j,3]]][infectioncounter[j,4],2] #indexing the shedding value for each day
+    } else if (infectioncounter[j,3] == 0) {
+      shed <- 0
+    }
+
+    dayshed <- append(dayshed, shed)
+  }
+  zeros <- seq(0,0,length.out = n-length(dayshed))
+  dayshed <- append(dayshed,zeros)
+  
+ 
+  dayshed[which(is.na(dayshed) == T)] <- 0
+  infectioncounter <- bind_cols(infectioncounter,dayshed)
+
+  names(infectioncounter)[names(infectioncounter) == 'dayshed'] <- d
+  
+  infectioncounter
+}
+  
+  for (pop in popu){
+    SARS_count <- create_infectioncounter(n = popu)
+    
+    for (day in 1:nrow(SEIR_out)){
+      
+      SARS_count <- day_infection_counts(I = SEIR_out[day,3],
+                                         R = SEIR_out[day,4],
+                                         shed_fits =  bestfit_sims, 
+                                         n = popu, 
+                                         d = day, 
+                                         infectioncounter = SARS_count,
+                                         posprob = 1- (length(threshold_neg_ids)/length(threshold_ids)))
+      
+    }
+    
+    means <- c()
+    for (col in 5:75){
+      avs <- sum(10^SARS_count[,col])
+      means <- append(means, avs)
+    }
+    
+    incidence <- c()
+    for (day in 1:nrow(SEIR_out)){
+      dayincidence <- sum(SARS_count$Day_of_infection == day)
+      incidence <- append(incidence, dayincidence)
+    }
+    
+    SEIR_out$incidence <- incidence
+    
+    SEIR_results[[as.character(popu)]] <- SEIR_out
+    SARS_count_results[[as.character(popu)]] <- SARS_count
+    
+    
+    SARS_ww <- c()
+    for (jour in 5:255){
+      
+      SARS_day_ww <- 0
+      
+      for (ind in 1:popu){
+        dil <- ww_dilute(Kd,TSS,Pshedders = 1, Ptotal = popu, ffecal = 1, Cfeces = 10^SARS_count[ind,jour])/Kd
+        SARS_day_ww <- SARS_day_ww + dil
+      }
+      
+      SARS_ww <- append(SARS_ww, SARS_day_ww)
+    }
+    
+    SARS_rollmean <- data.frame('Day' =  4:247,'WW_rollmean' = rollmean(SARS_ww,7))
+    
+    SARS_rollmean <- data.frame('Iter' = rep(j, nrow(SARS_rollmean)), SARS_rollmean)
+
+   
+  }
+  SARS_rollmean_app <- rbind(SARS_rollmean_app, SARS_rollmean)
+}
+
+spaghettiAll[[as.character(popu)]] <- SARS_rollmean_app
+}
+
+
+maxes <- c()
+for(item in names(spaghettiAll)){
+  maxes <- append(maxes, max(spaghettiAll[[item]][,3]))
+  
+}
+```
+
