@@ -13,7 +13,7 @@ source('WW Modeling.R')
 source('Shedding Functions.R')
 
 
-N <- 10 #Population size
+N <- 1000 #Population size
 
 parms <- c(beta=0.2,gamma.1=0.1,gamma.e=0.2) #SEIR parameters
 
