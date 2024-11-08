@@ -8,4 +8,4 @@ Integrated mechanistic model describing dynamics of fecally shed signals into wa
 - **Wastewater Model** - Take the number of infected individuals and fecal shedding profiles to produce data for bulk wastewater measurements.
 
 
-**Start with Basic model.R. Will produce a single iteration at a defined population** 
+**Start with Basic model.R (and dependencies), will produce a single iteration at a defined population** 
