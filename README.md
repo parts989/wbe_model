@@ -7,4 +7,3 @@ Integrated mechanistic model describing dynamics of fecally shed signals into wa
 - **SLIR Model** - Generate model epidemiological data for an outbreak of SARS-CoV-2 to use as inputs for wastewater model
 - **Wastewater Model** - Take the number of infected individuals and fecal shedding profiles to produce data for bulk wastewater measurements.
 
-## Fecal Shedding Model
